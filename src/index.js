@@ -34,21 +34,24 @@ app.get("/api/quote", async (req, res) => {
   }
 });
 
+// ...
 app.post("/api/bridge", async (req, res) => {
   try {
-    const { fromChain, toChain, token = "USDC", amount } = req.body || {};
+    const { fromChain, toChain, token="USDC", amount, recipient, svmSender, evmRecipient, slippageBps } = req.body || {};
     if (!fromChain || !toChain || !amount) return res.status(400).json({ error: "fromChain,toChain,amount required" });
 
-    const out = (!isSolana(fromChain) && !isSolana(toChain))
-      ? await buildEvmTx({ fromChain, toChain, token, amount })
-      : await buildSolanaTx({ fromChain, toChain, token, amount });
-
-    res.json(out);
+    if (fromChain !== "solana" && toChain !== "solana") {
+      const out = await buildEvmTx({ fromChain, toChain, token, amount, recipient, slippageBps });
+      return res.json(out);
+    }
+    const out = await buildSolanaTx({ fromChain, toChain, token, amount, svmSender, evmRecipient });
+    return res.json(out);
   } catch (e) {
     console.error("bridge error", e);
     res.status(500).json({ error: e.message || "bridge failed" });
   }
 });
+
 
 app.use((_, res) => res.status(404).send("Not Found"));
 
