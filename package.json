@@ -6,11 +6,14 @@
   "scripts": {
     "start": "node src/index.js"
   },
+  "engines": {
+    "node": ">=20 <23"
+  },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "ethers": "^6.13.2",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
     "@solana/web3.js": "^1.95.3"
   }
 }
