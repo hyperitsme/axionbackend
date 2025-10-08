@@ -1,26 +1,13 @@
+// src/adapters/wormhole.js
 import { Connection, PublicKey, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync, createApproveInstruction, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
-// 👉 penting: ESM tidak bisa import direktori, jadi tunjuk file index.js secara eksplisit
-import {
-  deriveTokenBridgeConfigKey,
-  deriveTokenBridgeEmitterKey,
-  deriveTokenBridgeAuthoritySignerKey,
-  deriveTokenBridgeCustodyKey,
-  deriveTokenBridgeCustodySignerKey,
-  deriveWormholeBridgeDataKey,
-  createTransferNativeInstruction,
-  createTransferWrappedInstruction
-} from "@certusone/wormhole-sdk/lib/cjs/solana/tokenBridge/index.js";
-
-import { uint8ArrayToHex } from "@certusone/wormhole-sdk/lib/cjs/uint8Array.js";
-
+// ---- util env ----
 function whChainIds(){ try{ return JSON.parse(process.env.WORMHOLE_CHAIN_IDS_JSON||"{}"); }catch{ return {}; } }
-function whTokenBridgeMap(){ try{ return JSON.parse(process.env.WORMHOLE_TOKEN_BRIDGE_JSON||"{}"); }catch{ return {}; } }
 
-const SOLANA_RPC = process.env.SOLANA_RPC;
-const TOKEN_BRIDGE_SOL = process.env.WORMHOLE_TOKEN_BRIDGE_ADDRESS;      // wormDTU...
-const USDC_SOL = JSON.parse(process.env.USDC_ADDRESSES_JSON||"{}")["solana"]; // mint USDC SPL
+const SOLANA_RPC      = process.env.SOLANA_RPC;
+const TOKEN_BRIDGE_SOL= process.env.WORMHOLE_TOKEN_BRIDGE_ADDRESS;      // wormDTU...
+const USDC_SOL        = JSON.parse(process.env.USDC_ADDRESSES_JSON||"{}")["solana"]; // mint USDC SPL
 
 export async function getQuoteSvm({ fromChain, toChain, token, amount }) {
   const rate = 0.9985;
@@ -35,15 +22,26 @@ export async function getQuoteSvm({ fromChain, toChain, token, amount }) {
  */
 export async function buildSolanaTx({ fromChain, toChain, amount, svmSender, evmRecipient }) {
   if (fromChain !== "solana") throw new Error("This builder handles Solana→EVM only");
-  if (!svmSender) throw new Error("svmSender (Solana pubkey) required");
-  if (!evmRecipient) throw new Error("evmRecipient (EVM address) required");
+  if (!svmSender)       throw new Error("svmSender (Solana pubkey) required");
+  if (!evmRecipient)    throw new Error("evmRecipient (EVM address) required");
 
   const dstWhId = whChainIds()[toChain?.toLowerCase()];
   if (!dstWhId) throw new Error(`Wormhole chain id not found for ${toChain}`);
 
-  const conn = new Connection(SOLANA_RPC, "confirmed");
+  // 🔸 dynamic import: pastikan Node ESM tidak gagal bila path SDK berubah
+  const tb = await import("@certusone/wormhole-sdk/lib/cjs/solana/tokenBridge/index.js");
+
+  const {
+    deriveTokenBridgeConfigKey,
+    deriveTokenBridgeAuthoritySignerKey,
+    deriveTokenBridgeCustodySignerKey,
+    deriveWormholeBridgeDataKey,
+    createTransferNativeInstruction
+  } = tb;
+
+  const conn  = new Connection(SOLANA_RPC, "confirmed");
   const payer = new PublicKey(svmSender);
-  const mint = new PublicKey(USDC_SOL);
+  const mint  = new PublicKey(USDC_SOL);
   const tokenBridge = new PublicKey(TOKEN_BRIDGE_SOL);
 
   // ATA USDC milik user
@@ -55,33 +53,28 @@ export async function buildSolanaTx({ fromChain, toChain, amount, svmSender, evm
   // recipient EVM -> 32 bytes
   const targetAddress32 = Buffer.from(evmRecipient.replace(/^0x/, "").padStart(64, "0"), "hex");
 
-  // === approve ATA → custody signer ===
+  // approve ATA → custody signer
   const custodySigner = deriveTokenBridgeCustodySignerKey(tokenBridge, mint)[0];
   const approveIx = createApproveInstruction(
-    fromAta,
-    custodySigner,
-    payer,
-    Number(amountU64),
-    [],
-    TOKEN_PROGRAM_ID
+    fromAta, custodySigner, payer, Number(amountU64), [], TOKEN_PROGRAM_ID
   );
 
-  // === transfer native USDC via Token Bridge ===
-  const msgNonce = Math.floor(Math.random()*1e9);
+  // transfer native USDC via TB
+  const msgNonce   = Math.floor(Math.random()*1e9);
   const transferIx = createTransferNativeInstruction(
     tokenBridge,
     deriveWormholeBridgeDataKey(tokenBridge)[0],
     deriveTokenBridgeConfigKey(tokenBridge)[0],
-    payer,                      // payer
-    fromAta,                    // from token account
-    mint,                       // mint (USDC SPL)
-    custodySigner,              // custody signer
+    payer,                       // payer
+    fromAta,                     // from token account
+    mint,                        // USDC mint
+    custodySigner,               // custody signer
     deriveTokenBridgeAuthoritySignerKey(tokenBridge)[0],
-    new PublicKey("Sysvar1nstructions1111111111111111111111111"), // sysvar instructions
+    new PublicKey("Sysvar1nstructions1111111111111111111111111"),
     TOKEN_PROGRAM_ID,
-    dstWhId,                    // wormhole dst chain id
-    targetAddress32,            // 32-byte EVM address
-    amountU64,                  // amount (u64)
+    dstWhId,                     // wormhole dst chain id
+    targetAddress32,             // 32-byte EVM address
+    amountU64,                   // amount (u64)
     msgNonce
   );
 
