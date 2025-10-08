@@ -1,102 +1,101 @@
-// Wormhole (Solana leg) – lazy import agar server tetap start walau @solana/web3.js belum terpasang
+import { Connection, PublicKey, TransactionMessage, VersionedTransaction, SystemProgram } from "@solana/web3.js";
+import { getAssociatedTokenAddressSync, createApproveInstruction, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import {
+  deriveTokenBridgeConfigKey,
+  deriveTokenBridgeEmitterKey,
+  deriveTokenBridgeAuthoritySignerKey,
+  deriveTokenBridgeCustodyKey,
+  deriveTokenBridgeCustodySignerKey,
+  deriveWormholeBridgeDataKey,
+  createTransferNativeInstruction, // untuk SPL asli
+  createTransferWrappedInstruction, // jika USDC wrapped (di Solana USDC = native SPL, jadi pakai Native)
+} from "@certusone/wormhole-sdk/lib/cjs/solana/tokenBridge";
+import { uint8ArrayToHex } from "@certusone/wormhole-sdk/lib/cjs/uint8Array";
 
-function hasWeb3() {
-  try { return !!require.resolve; } catch { return false; }
-}
+function whChainIds(){ try{ return JSON.parse(process.env.WORMHOLE_CHAIN_IDS_JSON||"{}"); }catch{ return {}; } }
+function whTokenBridgeMap(){ try{ return JSON.parse(process.env.WORMHOLE_TOKEN_BRIDGE_JSON||"{}"); }catch{ return {}; } }
 
-// Helper untuk import dinamis @solana/web3.js saat dibutuhkan
-async function loadSolanaWeb3() {
-  try {
-    // dynamic import ESM
-    const mod = await import("@solana/web3.js");
-    return mod;
-  } catch (e) {
-    // Bila paket tidak ada, balas note agar dev tahu kenapa
-    const err = new Error("Missing @solana/web3.js. Tambahkan ke package.json dependencies.");
-    err.code = "SOLANA_WEB3_MISSING";
-    throw err;
-  }
-}
+const SOLANA_RPC = process.env.SOLANA_RPC;
+const TOKEN_BRIDGE_SOL = process.env.WORMHOLE_TOKEN_BRIDGE_ADDRESS;      // wormDTU...
+const USDC_SOL = JSON.parse(process.env.USDC_ADDRESSES_JSON||"{}")["solana"]; // mint USDC SPL
 
-// Quote sederhana (tetap jalan tanpa @solana/web3.js)
 export async function getQuoteSvm({ fromChain, toChain, token, amount }) {
   const rate = 0.9985;
-  const fee = Math.max(0.35, Number(amount || 0) * 0.0020);
-  const toAmount = Math.max(0, Number(amount || 0) * rate - fee);
-  const eta = "~4–9 min";
-  return { route: "Wormhole", rate, fee: +fee.toFixed(6), toAmount: +toAmount.toFixed(6), eta };
+  const fee = Math.max(0.35, Number(amount||0)*0.0020);
+  const toAmount = Math.max(0, Number(amount||0)*rate - fee);
+  return { route:"Wormhole", rate, fee:+fee.toFixed(6), toAmount:+toAmount.toFixed(6), eta:"~4–9 min" };
 }
 
 /**
- * Build unsigned VersionedTransaction utk Solana→EVM (placeholder aman).
- * Untuk produksi, ganti instruksi dummy dengan ixs Token Bridge.
- *
- * body: { fromChain, toChain, token, amount, svmSender, evmRecipient }
- * resp: { chainType:'svm', tx: base64, note }
+ * Build unsigned VersionedTransaction for Solana→EVM USDC (Token Bridge).
+ * body: { fromChain:'solana', toChain:'base'|'ethereum'|..., amount:'10', svmSender:'<base58>', evmRecipient:'0x...' }
  */
-export async function buildSolanaTx({ fromChain, toChain, token = "USDC", amount, svmSender, evmRecipient }) {
-  const involvesSol = fromChain === "solana" || toChain === "solana";
-  if (!involvesSol) throw new Error("Solana route only");
+export async function buildSolanaTx({ fromChain, toChain, amount, svmSender, evmRecipient }) {
+  if (fromChain !== "solana") throw new Error("This builder handles Solana→EVM only");
+  if (!svmSender) throw new Error("svmSender (Solana pubkey) required");
+  if (!evmRecipient) throw new Error("evmRecipient (EVM address) required");
 
-  // Import @solana/web3.js hanya di sini, bukan saat server start
-  let web3;
-  try {
-    web3 = await loadSolanaWeb3();
-  } catch (e) {
-    if (e.code === "SOLANA_WEB3_MISSING") {
-      return {
-        chainType: "svm",
-        tx: null,
-        note: "Solana builder tidak aktif karena @solana/web3.js belum terpasang. Tambahkan paketnya lalu redeploy."
-      };
-    }
-    throw e;
-  }
+  const dstWhId = whChainIds()[toChain?.toLowerCase()];
+  if (!dstWhId) throw new Error(`Wormhole chain id not found for ${toChain}`);
 
-  if (fromChain !== "solana") {
-    // EVM→Solana: disarankan bangun tx EVM (bukan Solana) di adapter EVM.
-    return {
-      chainType: "svm",
-      tx: null,
-      note: "Gunakan adapter EVM untuk arah EVM→Solana. Builder ini menyiapkan tx Solana→EVM."
-    };
-  }
-
-  if (!svmSender || !evmRecipient) {
-    return {
-      chainType: "svm",
-      tx: null,
-      note: "svmSender (pubkey base58) & evmRecipient (0x…) wajib diisi untuk menyusun tx."
-    };
-  }
-
-  // ===== Placeholder VersionedTransaction (bisa ditandatangani Phantom) =====
-  const { Connection, PublicKey, TransactionMessage, VersionedTransaction } = web3;
-  const conn = new Connection(process.env.SOLANA_RPC, "confirmed");
+  const conn = new Connection(SOLANA_RPC, "confirmed");
   const payer = new PublicKey(svmSender);
+  const mint = new PublicKey(USDC_SOL);
+  const tokenBridge = new PublicKey(TOKEN_BRIDGE_SOL);
 
-  // instruksi dummy (tidak memindahkan apa pun) agar flow Phantom & UI teruji
-  const programId = new PublicKey(process.env.WORMHOLE_TOKEN_BRIDGE_ADDRESS || "11111111111111111111111111111111");
-  const dummyIx = {
-    programId,
-    keys: [],
-    // gunakan Uint8Array agar aman di ESM/Node 20+
-    data: new Uint8Array([0x41, 0x58, 0x49, 0x4f, 0x4e]) // "AXION"
-  };
+  // ATA USDC milik user
+  const fromAta = getAssociatedTokenAddressSync(mint, payer, false);
 
+  // amount dalam 6 desimal
+  const amountU64 = BigInt(Math.floor(Number(amount) * 1e6)); // USDC 6
+
+  // recipient EVM -> 32 bytes
+  const targetAddress32 = Buffer.from(evmRecipient.replace(/^0x/, "").padStart(64, "0"), "hex");
+
+  // === Instruksi approve spender = custody signer (agar TB bisa memindahkan USDC dari ATA) ===
+  // Di TB V2, spender yang digunakan adalah authority signer program
+  const custodySigner = deriveTokenBridgeCustodySignerKey(tokenBridge, mint)[0]; // PDA
+  const approveIx = createApproveInstruction(
+    fromAta,                                  // source
+    custodySigner,                             // delegate
+    payer,                                     // owner
+    Number(amountU64),                         // amount
+    [], TOKEN_PROGRAM_ID
+  );
+
+  // === Instruksi transfer native ===
+  const msgNonce = Math.floor(Math.random()*1e9);
+  const transferIx = createTransferNativeInstruction(
+    tokenBridge,
+    deriveWormholeBridgeDataKey(tokenBridge)[0],
+    deriveTokenBridgeConfigKey(tokenBridge)[0],
+    payer,                      // payer
+    fromAta,                    // from token account
+    mint,                       // mint (USDC)
+    custodySigner,              // custody signer
+    deriveTokenBridgeAuthoritySignerKey(tokenBridge)[0],
+    new PublicKey("Sysvar1nstructions1111111111111111111111111"),
+    TOKEN_PROGRAM_ID,
+    dstWhId,                    // target chain id (wormhole)
+    targetAddress32,            // 32-byte target address
+    amountU64,                  // amount
+    msgNonce
+  );
+
+  // Compose v0 message
   const { blockhash } = await conn.getLatestBlockhash("finalized");
   const msg = new TransactionMessage({
     payerKey: payer,
     recentBlockhash: blockhash,
-    instructions: [dummyIx]
+    instructions: [approveIx, transferIx]
   }).compileToV0Message();
 
   const vtx = new VersionedTransaction(msg);
-  const serialized = Buffer.from(vtx.serialize()).toString("base64");
+  const base64 = Buffer.from(vtx.serialize()).toString("base64");
 
   return {
     chainType: "svm",
-    tx: serialized,
-    note: "VT siap ditandatangani Phantom (dummy). Ganti dengan instruksi Wormhole Token Bridge untuk produksi."
+    tx: base64,
+    note: `Wormhole TB transfer USDC Solana→${toChain} amount=${amount} (nonce=${msgNonce})`
   };
 }
