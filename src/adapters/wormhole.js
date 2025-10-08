@@ -1,5 +1,7 @@
-import { Connection, PublicKey, TransactionMessage, VersionedTransaction, SystemProgram } from "@solana/web3.js";
+import { Connection, PublicKey, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync, createApproveInstruction, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+
+// 👉 penting: ESM tidak bisa import direktori, jadi tunjuk file index.js secara eksplisit
 import {
   deriveTokenBridgeConfigKey,
   deriveTokenBridgeEmitterKey,
@@ -7,9 +9,10 @@ import {
   deriveTokenBridgeCustodyKey,
   deriveTokenBridgeCustodySignerKey,
   deriveWormholeBridgeDataKey,
-  createTransferNativeInstruction, // untuk SPL asli
-  createTransferWrappedInstruction, // jika USDC wrapped (di Solana USDC = native SPL, jadi pakai Native)
+  createTransferNativeInstruction,
+  createTransferWrappedInstruction
 } from "@certusone/wormhole-sdk/lib/cjs/solana/tokenBridge/index.js";
+
 import { uint8ArrayToHex } from "@certusone/wormhole-sdk/lib/cjs/uint8Array.js";
 
 function whChainIds(){ try{ return JSON.parse(process.env.WORMHOLE_CHAIN_IDS_JSON||"{}"); }catch{ return {}; } }
@@ -52,18 +55,18 @@ export async function buildSolanaTx({ fromChain, toChain, amount, svmSender, evm
   // recipient EVM -> 32 bytes
   const targetAddress32 = Buffer.from(evmRecipient.replace(/^0x/, "").padStart(64, "0"), "hex");
 
-  // === Instruksi approve spender = custody signer (agar TB bisa memindahkan USDC dari ATA) ===
-  // Di TB V2, spender yang digunakan adalah authority signer program
-  const custodySigner = deriveTokenBridgeCustodySignerKey(tokenBridge, mint)[0]; // PDA
+  // === approve ATA → custody signer ===
+  const custodySigner = deriveTokenBridgeCustodySignerKey(tokenBridge, mint)[0];
   const approveIx = createApproveInstruction(
-    fromAta,                                  // source
-    custodySigner,                             // delegate
-    payer,                                     // owner
-    Number(amountU64),                         // amount
-    [], TOKEN_PROGRAM_ID
+    fromAta,
+    custodySigner,
+    payer,
+    Number(amountU64),
+    [],
+    TOKEN_PROGRAM_ID
   );
 
-  // === Instruksi transfer native ===
+  // === transfer native USDC via Token Bridge ===
   const msgNonce = Math.floor(Math.random()*1e9);
   const transferIx = createTransferNativeInstruction(
     tokenBridge,
@@ -71,18 +74,17 @@ export async function buildSolanaTx({ fromChain, toChain, amount, svmSender, evm
     deriveTokenBridgeConfigKey(tokenBridge)[0],
     payer,                      // payer
     fromAta,                    // from token account
-    mint,                       // mint (USDC)
+    mint,                       // mint (USDC SPL)
     custodySigner,              // custody signer
     deriveTokenBridgeAuthoritySignerKey(tokenBridge)[0],
-    new PublicKey("Sysvar1nstructions1111111111111111111111111"),
+    new PublicKey("Sysvar1nstructions1111111111111111111111111"), // sysvar instructions
     TOKEN_PROGRAM_ID,
-    dstWhId,                    // target chain id (wormhole)
-    targetAddress32,            // 32-byte target address
-    amountU64,                  // amount
+    dstWhId,                    // wormhole dst chain id
+    targetAddress32,            // 32-byte EVM address
+    amountU64,                  // amount (u64)
     msgNonce
   );
 
-  // Compose v0 message
   const { blockhash } = await conn.getLatestBlockhash("finalized");
   const msg = new TransactionMessage({
     payerKey: payer,
