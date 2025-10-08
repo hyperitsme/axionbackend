@@ -9,8 +9,8 @@ import {
   deriveWormholeBridgeDataKey,
   createTransferNativeInstruction, // untuk SPL asli
   createTransferWrappedInstruction, // jika USDC wrapped (di Solana USDC = native SPL, jadi pakai Native)
-} from "@certusone/wormhole-sdk/lib/cjs/solana/tokenBridge";
-import { uint8ArrayToHex } from "@certusone/wormhole-sdk/lib/cjs/uint8Array";
+} from "@certusone/wormhole-sdk/lib/cjs/solana/tokenBridge/index.js";
+import { uint8ArrayToHex } from "@certusone/wormhole-sdk/lib/cjs/uint8Array.js";
 
 function whChainIds(){ try{ return JSON.parse(process.env.WORMHOLE_CHAIN_IDS_JSON||"{}"); }catch{ return {}; } }
 function whTokenBridgeMap(){ try{ return JSON.parse(process.env.WORMHOLE_TOKEN_BRIDGE_JSON||"{}"); }catch{ return {}; } }
